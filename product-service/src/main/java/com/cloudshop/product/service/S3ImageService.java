@@ -10,7 +10,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
-import software.amazon.awssdk.services.s3.model.*;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequest;
@@ -18,10 +21,15 @@ import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequ
 import java.io.IOException;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.Map;
 import java.util.UUID;
 
 /**
  * Service for managing product images in AWS S3.
+ * 
+ * Java 25 Features Used:
+ * - Records for internal data structures
+ * - Pattern matching in validation
  * 
  * Handles:
  * - Image upload with validation
@@ -38,6 +46,33 @@ public class S3ImageService {
     private final S3Properties s3Properties;
 
     /**
+     * Java 25: Record for encapsulating file metadata - immutable and clear.
+     */
+    private record FileMetadata(
+            String originalFilename,
+            String extension,
+            String contentType,
+            long size
+    ) {
+        static FileMetadata from(MultipartFile file) {
+            String filename = file.getOriginalFilename();
+            return new FileMetadata(
+                    filename,
+                    extractExtension(filename),
+                    file.getContentType(),
+                    file.getSize()
+            );
+        }
+
+        private static String extractExtension(String filename) {
+            if (filename == null || !filename.contains(".")) {
+                return "jpg";
+            }
+            return filename.substring(filename.lastIndexOf('.') + 1).toLowerCase();
+        }
+    }
+
+    /**
      * Upload a product image to S3
      * 
      * @param productId The product ID (used for organizing files)
@@ -45,52 +80,51 @@ public class S3ImageService {
      * @return Upload response with S3 key and URLs
      */
     public ImageUploadResponse uploadProductImage(Long productId, MultipartFile file) {
-        // Validate file
         validateFile(file);
 
-        // Generate unique key
-        String originalFilename = file.getOriginalFilename();
-        String extension = getFileExtension(originalFilename);
-        String key = generateS3Key(productId, extension);
+        FileMetadata metadata = FileMetadata.from(file);
+        String key = generateS3Key(productId, metadata.extension());
 
         log.info("Uploading image for product {} with key: {}", productId, key);
 
         try {
-            // Build put request
             PutObjectRequest putRequest = PutObjectRequest.builder()
                     .bucket(s3Properties.getBucket().getProducts())
                     .key(key)
-                    .contentType(file.getContentType())
-                    .contentLength(file.getSize())
-                    .metadata(java.util.Map.of(
+                    .contentType(metadata.contentType())
+                    .contentLength(metadata.size())
+                    .metadata(Map.of(
                             "product-id", String.valueOf(productId),
-                            "original-filename", originalFilename != null ? originalFilename : "unknown"
+                            "original-filename", metadata.originalFilename() != null 
+                                    ? metadata.originalFilename() 
+                                    : "unknown"
                     ))
                     .build();
 
-            // Upload file
-            s3Client.putObject(putRequest, RequestBody.fromInputStream(file.getInputStream(), file.getSize()));
+            s3Client.putObject(putRequest, RequestBody.fromInputStream(
+                    file.getInputStream(), 
+                    metadata.size()
+            ));
 
             log.info("Successfully uploaded image: {}", key);
 
-            // Generate presigned URL
             String presignedUrl = generatePresignedUrl(key);
 
             return ImageUploadResponse.builder()
                     .s3Key(key)
                     .presignedUrl(presignedUrl)
                     .presignedUrlExpiresIn(s3Properties.getPresignedUrlExpiration())
-                    .originalFilename(originalFilename)
-                    .contentType(file.getContentType())
-                    .size(file.getSize())
+                    .originalFilename(metadata.originalFilename())
+                    .contentType(metadata.contentType())
+                    .size(metadata.size())
                     .build();
 
         } catch (IOException e) {
-            log.error("Failed to read file for upload: {}", originalFilename, e);
-            throw S3OperationException.uploadFailed(originalFilename, e);
+            log.error("Failed to read file for upload: {}", metadata.originalFilename(), e);
+            throw S3OperationException.uploadFailed(metadata.originalFilename(), e);
         } catch (S3Exception e) {
             log.error("S3 error during upload: {}", e.getMessage(), e);
-            throw S3OperationException.uploadFailed(originalFilename, e);
+            throw S3OperationException.uploadFailed(metadata.originalFilename(), e);
         }
     }
 
@@ -130,7 +164,7 @@ public class S3ImageService {
      */
     public String generatePresignedUrl(String s3Key) {
         if (s3Key == null || s3Key.isBlank()) {
-            return null;
+            return "";
         }
 
         try {
@@ -150,40 +184,12 @@ public class S3ImageService {
 
         } catch (S3Exception e) {
             log.error("Failed to generate presigned URL for key: {}", s3Key, e);
-            return null;
+            return "";
         }
     }
 
     /**
-     * Check if an image exists in S3
-     * 
-     * @param s3Key The S3 key to check
-     * @return true if the image exists
-     */
-    public boolean imageExists(String s3Key) {
-        if (s3Key == null || s3Key.isBlank()) {
-            return false;
-        }
-
-        try {
-            HeadObjectRequest headRequest = HeadObjectRequest.builder()
-                    .bucket(s3Properties.getBucket().getProducts())
-                    .key(s3Key)
-                    .build();
-
-            s3Client.headObject(headRequest);
-            return true;
-
-        } catch (NoSuchKeyException e) {
-            return false;
-        } catch (S3Exception e) {
-            log.warn("Error checking if image exists: {}", s3Key, e);
-            return false;
-        }
-    }
-
-    /**
-     * Validate uploaded file
+     * Validate uploaded file.
      */
     private void validateFile(MultipartFile file) {
         // Check if file is empty
@@ -198,42 +204,44 @@ public class S3ImageService {
 
         // Check content type
         String contentType = file.getContentType();
-        if (contentType == null || !isAllowedContentType(contentType)) {
+        if (!isAllowedContentType(contentType)) {
             throw InvalidFileException.invalidContentType(contentType);
         }
 
         // Validate filename
         String filename = file.getOriginalFilename();
-        if (filename == null || filename.isBlank() || filename.contains("..")) {
+        if (!isValidFilename(filename)) {
             throw InvalidFileException.invalidFilename(filename);
         }
     }
 
     /**
-     * Check if content type is allowed
+     * Check if content type is allowed.
      */
     private boolean isAllowedContentType(String contentType) {
-        return Arrays.asList(s3Properties.getAllowedContentTypes()).contains(contentType);
+        if (contentType == null) {
+            return false;
+        }
+        
+        return Arrays.stream(s3Properties.getAllowedContentTypes())
+                .anyMatch(allowed -> allowed.equalsIgnoreCase(contentType));
     }
 
     /**
-     * Generate S3 key for product image
-     * Format: products/{productId}/{uuid}.{extension}
+     * Validate filename for security.
+     */
+    private boolean isValidFilename(String filename) {
+        return filename != null 
+                && !filename.isBlank() 
+                && !filename.contains("..")
+                && !filename.contains("/")
+                && !filename.contains("\\");
+    }
+
+    /**
+     * Generate S3 key for product image.
      */
     private String generateS3Key(Long productId, String extension) {
-        return String.format("products/%d/%s.%s",
-                productId,
-                UUID.randomUUID().toString(),
-                extension);
-    }
-
-    /**
-     * Extract file extension from filename
-     */
-    private String getFileExtension(String filename) {
-        if (filename == null || !filename.contains(".")) {
-            return "jpg"; // Default extension
-        }
-        return filename.substring(filename.lastIndexOf('.') + 1).toLowerCase();
+        return "products/%d/%s.%s".formatted(productId, UUID.randomUUID(), extension);
     }
 }

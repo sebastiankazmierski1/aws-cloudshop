@@ -4,7 +4,12 @@ import com.cloudshop.common.dto.CreateProductRequest;
 import com.cloudshop.common.dto.ProductDto;
 import com.cloudshop.common.dto.UpdateProductRequest;
 import com.cloudshop.common.entity.Product;
-import org.mapstruct.*;
+import org.mapstruct.AfterMapping;
+import org.mapstruct.Mapper;
+import org.mapstruct.Mapping;
+import org.mapstruct.MappingTarget;
+import org.mapstruct.NullValuePropertyMappingStrategy;
+import org.mapstruct.ReportingPolicy;
 
 import java.util.List;
 

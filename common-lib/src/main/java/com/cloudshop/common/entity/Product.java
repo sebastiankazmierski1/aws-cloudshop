@@ -6,6 +6,7 @@ import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -13,6 +14,10 @@ import java.util.List;
 /**
  * Product entity representing items in the catalog.
  * Stored in PostgreSQL via RDS.
+ * 
+ * Java 25 Features Used:
+ * - Nested Records for immutable data snapshots
+ * - Pattern matching ready design
  */
 @Entity
 @Table(name = "products", indexes = {
@@ -106,12 +111,41 @@ public class Product {
     }
 
     /**
-     * Reserve stock for an order
+     * Calculate discount percentage.
+     */
+    public BigDecimal getDiscountPercentage() {
+        if (!isOnSale()) {
+            return BigDecimal.ZERO;
+        }
+        
+        return compareAtPrice.subtract(price)
+                .divide(compareAtPrice, 4, RoundingMode.HALF_UP)
+                .multiply(BigDecimal.valueOf(100))
+                .setScale(2, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * Get savings amount when on sale.
+     */
+    public BigDecimal getSavingsAmount() {
+        if (!isOnSale()) {
+            return BigDecimal.ZERO;
+        }
+        return compareAtPrice.subtract(price);
+    }
+
+    /**
+     * Reserve stock for an order.
      */
     public void reserveStock(int amount) {
+        if (amount <= 0) {
+            throw new IllegalArgumentException("Amount must be positive");
+        }
+        
         if (quantity < amount) {
             throw new IllegalStateException(
-                "Insufficient stock for product " + sku + ". Available: " + quantity + ", Requested: " + amount
+                "Insufficient stock for product %s. Available: %d, Requested: %d"
+                    .formatted(sku, quantity, amount)
             );
         }
         this.quantity -= amount;
@@ -121,6 +155,75 @@ public class Product {
      * Release reserved stock (e.g., cancelled order)
      */
     public void releaseStock(int amount) {
+        if (amount <= 0) {
+            throw new IllegalArgumentException("Amount must be positive");
+        }
         this.quantity += amount;
+    }
+
+    /**
+     * Check if product can be purchased.
+     * Uses enhanced enum method from ProductStatus.
+     */
+    public boolean canBePurchased() {
+        return status.isPurchasable() && isInStock();
+    }
+
+    /**
+     * Check if product is visible to customers.
+     * Uses enhanced enum method from ProductStatus.
+     */
+    public boolean isVisibleToCustomers() {
+        return status.isVisibleToCustomers();
+    }
+
+    /**
+     * Java 25: Record for stock info - immutable snapshot.
+     */
+    public record StockInfo(int quantity, boolean inStock, boolean lowStock) {
+        private static final int LOW_STOCK_THRESHOLD = 10;
+        
+        public static StockInfo from(Product product) {
+            return new StockInfo(
+                    product.quantity,
+                    product.isInStock(),
+                    product.quantity > 0 && product.quantity <= LOW_STOCK_THRESHOLD
+            );
+        }
+    }
+
+    /**
+     * Get stock information as immutable record.
+     */
+    public StockInfo getStockInfo() {
+        return StockInfo.from(this);
+    }
+
+    /**
+     * Java 25: Record for pricing info - immutable snapshot.
+     */
+    public record PricingInfo(
+            BigDecimal currentPrice,
+            BigDecimal originalPrice,
+            boolean onSale,
+            BigDecimal discountPercentage,
+            BigDecimal savingsAmount
+    ) {
+        public static PricingInfo from(Product product) {
+            return new PricingInfo(
+                    product.price,
+                    product.compareAtPrice,
+                    product.isOnSale(),
+                    product.getDiscountPercentage(),
+                    product.getSavingsAmount()
+            );
+        }
+    }
+
+    /**
+     * Get pricing information as immutable record.
+     */
+    public PricingInfo getPricingInfo() {
+        return PricingInfo.from(this);
     }
 }

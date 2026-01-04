@@ -1,10 +1,7 @@
 package com.cloudshop.product.controller;
 
 import com.cloudshop.common.dto.ApiResponse;
-import com.cloudshop.common.exception.CloudShopException;
-import com.cloudshop.common.exception.DuplicateResourceException;
-import com.cloudshop.common.exception.InvalidFileException;
-import com.cloudshop.common.exception.ResourceNotFoundException;
+import com.cloudshop.common.exception.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -18,41 +15,62 @@ import java.util.List;
 
 /**
  * Global exception handler for REST API.
+ * 
+ * Java 25: Uses pattern matching with switch expressions for sealed exceptions.
+ * Exhaustive handling of CloudShopException hierarchy.
  */
 @RestControllerAdvice
 @Slf4j
 public class GlobalExceptionHandler {
 
-    @ExceptionHandler(ResourceNotFoundException.class)
-    public ResponseEntity<ApiResponse<Void>> handleResourceNotFound(ResourceNotFoundException ex) {
-        log.warn("Resource not found: {}", ex.getMessage());
-        return ResponseEntity
-                .status(HttpStatus.NOT_FOUND)
-                .body(ApiResponse.error(ex.getMessage()));
-    }
-
-    @ExceptionHandler(DuplicateResourceException.class)
-    public ResponseEntity<ApiResponse<Void>> handleDuplicateResource(DuplicateResourceException ex) {
-        log.warn("Duplicate resource: {}", ex.getMessage());
-        return ResponseEntity
-                .status(HttpStatus.CONFLICT)
-                .body(ApiResponse.error(ex.getMessage()));
-    }
-
-    @ExceptionHandler(InvalidFileException.class)
-    public ResponseEntity<ApiResponse<Void>> handleInvalidFile(InvalidFileException ex) {
-        log.warn("Invalid file: {}", ex.getMessage());
-        return ResponseEntity
-                .status(HttpStatus.BAD_REQUEST)
-                .body(ApiResponse.error(ex.getMessage()));
-    }
-
+    /**
+     * Java 25: Pattern matching with sealed class hierarchy.
+     * The switch is exhaustive - compiler ensures all subtypes are handled.
+     */
     @ExceptionHandler(CloudShopException.class)
     public ResponseEntity<ApiResponse<Void>> handleCloudShopException(CloudShopException ex) {
-        log.error("CloudShop exception: {}", ex.getMessage(), ex);
-        return ResponseEntity
-                .status(ex.getStatus())
-                .body(ApiResponse.error(ex.getMessage()));
+        // Note: ProductNotFoundException extends ResourceNotFoundException, so it must come first
+        // ResourceNotFoundException is non-sealed, requiring a default case for exhaustiveness
+        return switch (ex) {
+            case ProductNotFoundException e -> {
+                log.warn("Product not found: {}", e.getUserMessage());
+                yield ResponseEntity
+                        .status(HttpStatus.NOT_FOUND)
+                        .body(ApiResponse.error(e.getUserMessage()));
+            }
+            case ResourceNotFoundException e -> {
+                log.warn("Resource not found: {}", e.getMessage());
+                yield ResponseEntity
+                        .status(HttpStatus.NOT_FOUND)
+                        .body(ApiResponse.error(e.getMessage()));
+            }
+            case DuplicateResourceException e -> {
+                log.warn("Duplicate resource: {}", e.getMessage());
+                yield ResponseEntity
+                        .status(HttpStatus.CONFLICT)
+                        .body(ApiResponse.error(e.getMessage()));
+            }
+            case InvalidFileException e -> {
+                log.warn("Invalid file: {}", e.getDetailedMessage());
+                yield ResponseEntity
+                        .status(HttpStatus.BAD_REQUEST)
+                        .body(ApiResponse.error(e.getDetailedMessage()));
+            }
+            case S3OperationException e -> {
+                log.error("S3 operation failed: {} - {}", e.getOperationDetails(), e.getMessage(), e);
+                yield ResponseEntity
+                        .status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body(ApiResponse.error("File operation failed. Please try again."));
+            }
+            // Default case required because ResourceNotFoundException is non-sealed
+            // and may have other subclasses at runtime
+            default -> {
+                log.error("Unhandled CloudShop exception: {}", ex.getMessage(), ex);
+                yield ResponseEntity
+                        .status(ex.getStatus())
+                        .body(ApiResponse.error(ex.getMessage()));
+            }
+        };
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -102,6 +120,6 @@ public class GlobalExceptionHandler {
     }
 
     private String formatFieldError(FieldError error) {
-        return String.format("%s: %s", error.getField(), error.getDefaultMessage());
+        return "%s: %s".formatted(error.getField(), error.getDefaultMessage());
     }
 }

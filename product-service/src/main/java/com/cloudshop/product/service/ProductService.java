@@ -1,6 +1,10 @@
 package com.cloudshop.product.service;
 
-import com.cloudshop.common.dto.*;
+import com.cloudshop.common.dto.CreateProductRequest;
+import com.cloudshop.common.dto.ImageUploadResponse;
+import com.cloudshop.common.dto.PagedResponse;
+import com.cloudshop.common.dto.ProductDto;
+import com.cloudshop.common.dto.UpdateProductRequest;
 import com.cloudshop.common.entity.Product;
 import com.cloudshop.common.entity.ProductStatus;
 import com.cloudshop.common.exception.DuplicateResourceException;
@@ -16,9 +20,15 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Service for product management operations.
+ * 
+ * Java 25 Features Used:
+ * - Records for data encapsulation
+ * - Pattern matching with switch expressions
+ * - Enhanced Optional usage
  * 
  * Handles:
  * - Product CRUD operations
@@ -36,18 +46,24 @@ public class ProductService {
     private final S3ImageService s3ImageService;
 
     /**
+     * Java 25: Record for encapsulating filter criteria - immutable and clear.
+     */
+    public record ProductFilter(
+            String category,
+            String brand,
+            ProductStatus status
+    ) {
+        public boolean hasAnyFilter() {
+            return category != null || brand != null || status != null;
+        }
+    }
+
+    /**
      * Get product by ID
      */
     public ProductDto getProductById(Long id) {
         Product product = findProductById(id);
-        ProductDto dto = productMapper.toDto(product);
-        
-        // Add presigned URL for image
-        if (product.getS3ImageKey() != null) {
-            dto.setImageUrl(s3ImageService.generatePresignedUrl(product.getS3ImageKey()));
-        }
-        
-        return dto;
+        return mapWithImageUrl(product);
     }
 
     /**
@@ -56,14 +72,7 @@ public class ProductService {
     public ProductDto getProductBySku(String sku) {
         Product product = productRepository.findBySku(sku)
                 .orElseThrow(() -> new ProductNotFoundException(sku));
-        
-        ProductDto dto = productMapper.toDto(product);
-        
-        if (product.getS3ImageKey() != null) {
-            dto.setImageUrl(s3ImageService.generatePresignedUrl(product.getS3ImageKey()));
-        }
-        
-        return dto;
+        return mapWithImageUrl(product);
     }
 
     /**
@@ -91,7 +100,7 @@ public class ProductService {
     }
 
     /**
-     * Get products by filters
+     * Get products by filters using record pattern.
      */
     public PagedResponse<ProductDto> getProductsByFilters(
             String category,
@@ -99,12 +108,25 @@ public class ProductService {
             ProductStatus status,
             Pageable pageable
     ) {
-        Page<Product> products = productRepository.findByFilters(category, brand, status, pageable);
+        var filter = new ProductFilter(category, brand, status);
+        
+        Page<Product> products;
+        if (filter.hasAnyFilter()) {
+            products = productRepository.findByFilters(
+                    filter.category(), 
+                    filter.brand(), 
+                    filter.status(), 
+                    pageable
+            );
+        } else {
+            products = productRepository.findAll(pageable);
+        }
+        
         return PagedResponse.from(products, this::mapWithImageUrl);
     }
 
     /**
-     * Get featured products
+     * Get featured products.
      */
     public List<ProductDto> getFeaturedProducts() {
         List<Product> products = productRepository.findByFeaturedTrueAndStatus(ProductStatus.ACTIVE);
@@ -122,7 +144,7 @@ public class ProductService {
     }
 
     /**
-     * Get all categories
+     * Get all categories.
      */
     public List<String> getAllCategories() {
         return productRepository.findAllCategories();
@@ -136,7 +158,7 @@ public class ProductService {
     }
 
     /**
-     * Create a new product
+     * Create a new product.
      */
     @Transactional
     public ProductDto createProduct(CreateProductRequest request) {
@@ -155,7 +177,7 @@ public class ProductService {
     }
 
     /**
-     * Update an existing product
+     * Update an existing product.
      */
     @Transactional
     public ProductDto updateProduct(Long id, UpdateProductRequest request) {
@@ -170,14 +192,24 @@ public class ProductService {
     }
 
     /**
-     * Update product status
+     * Update product status with validation.
+     * Uses enhanced enum method for transition validation.
      */
     @Transactional
-    public ProductDto updateProductStatus(Long id, ProductStatus status) {
-        log.info("Updating status of product {} to {}", id, status);
+    public ProductDto updateProductStatus(Long id, ProductStatus newStatus) {
+        log.info("Updating status of product {} to {}", id, newStatus);
 
         Product product = findProductById(id);
-        product.setStatus(status);
+        ProductStatus currentStatus = product.getStatus();
+
+        // Validate status transition using enhanced enum method
+        if (!currentStatus.canTransitionTo(newStatus)) {
+            throw new IllegalStateException(
+                "Cannot transition product from %s to %s".formatted(currentStatus, newStatus)
+            );
+        }
+
+        product.setStatus(newStatus);
         product = productRepository.save(product);
 
         return productMapper.toDto(product);
@@ -192,18 +224,19 @@ public class ProductService {
 
         Product product = findProductById(id);
 
-        // Delete old image if exists
-        if (product.getS3ImageKey() != null) {
-            log.info("Deleting old image: {}", product.getS3ImageKey());
-            s3ImageService.deleteImage(product.getS3ImageKey());
-        }
+        // Delete old image if exists using Optional pattern
+        Optional.ofNullable(product.getS3ImageKey())
+                .ifPresent(key -> {
+                    log.info("Deleting old image: {}", key);
+                    s3ImageService.deleteImage(key);
+                });
 
         // Upload new image
         ImageUploadResponse response = s3ImageService.uploadProductImage(id, file);
 
         // Update product with new image key
-        product.setS3ImageKey(response.getS3Key());
-        product.setImageUrl(response.getPresignedUrl());
+        product.setS3ImageKey(response.s3Key());
+        product.setImageUrl(response.presignedUrl());
         productRepository.save(product);
 
         return response;
@@ -218,12 +251,13 @@ public class ProductService {
 
         Product product = findProductById(id);
 
-        if (product.getS3ImageKey() != null) {
-            s3ImageService.deleteImage(product.getS3ImageKey());
-            product.setS3ImageKey(null);
-            product.setImageUrl(null);
-            productRepository.save(product);
-        }
+        Optional.ofNullable(product.getS3ImageKey())
+                .ifPresent(key -> {
+                    s3ImageService.deleteImage(key);
+                    product.setS3ImageKey(null);
+                    product.setImageUrl(null);
+                    productRepository.save(product);
+                });
     }
 
     /**
@@ -241,7 +275,7 @@ public class ProductService {
     }
 
     /**
-     * Hard delete a product
+     * Hard delete a product and its image.
      */
     @Transactional
     public void hardDeleteProduct(Long id) {
@@ -249,10 +283,9 @@ public class ProductService {
 
         Product product = findProductById(id);
 
-        // Delete image from S3 first
-        if (product.getS3ImageKey() != null) {
-            s3ImageService.deleteImage(product.getS3ImageKey());
-        }
+        // Delete image from S3 first using Optional
+        Optional.ofNullable(product.getS3ImageKey())
+                .ifPresent(s3ImageService::deleteImage);
 
         productRepository.delete(product);
         log.info("Hard deleted product with ID: {}", id);
@@ -280,11 +313,16 @@ public class ProductService {
                 .orElseThrow(() -> new ProductNotFoundException(id));
     }
 
+    /**
+     * Map product to DTO with presigned image URL.
+     */
     private ProductDto mapWithImageUrl(Product product) {
         ProductDto dto = productMapper.toDto(product);
-        if (product.getS3ImageKey() != null) {
-            dto.setImageUrl(s3ImageService.generatePresignedUrl(product.getS3ImageKey()));
-        }
+        
+        Optional.ofNullable(product.getS3ImageKey())
+                .map(s3ImageService::generatePresignedUrl)
+                .ifPresent(dto::setImageUrl);
+        
         return dto;
     }
 }
