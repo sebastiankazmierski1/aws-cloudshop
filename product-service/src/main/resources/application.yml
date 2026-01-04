@@ -1,0 +1,177 @@
+spring:
+  application:
+    name: product-service
+
+  profiles:
+    active: local
+
+  # JPA Configuration
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        format_sql: true
+        jdbc:
+          time_zone: UTC
+
+  # Flyway Migration
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration
+
+  # File Upload
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 10MB
+
+# Server Configuration
+server:
+  port: 8080
+  error:
+    include-message: always
+    include-binding-errors: always
+
+# Actuator
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when_authorized
+      probes:
+        enabled: true
+
+# Logging
+logging:
+  level:
+    root: INFO
+    com.cloudshop: DEBUG
+    org.springframework.web: INFO
+    org.hibernate.SQL: DEBUG
+    software.amazon.awssdk: INFO
+
+# OpenAPI
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+
+---
+# Local Profile (H2 + LocalStack)
+spring:
+  config:
+    activate:
+      on-profile: local
+
+  datasource:
+    url: jdbc:h2:mem:cloudshop;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    database-platform: org.hibernate.dialect.H2Dialect
+
+  flyway:
+    enabled: false
+
+# AWS Configuration for LocalStack
+aws:
+  region: eu-central-1
+  accessKeyId: test
+  secretAccessKey: test
+  s3:
+    endpoint: http://localhost:4566
+    bucket:
+      products: cloudshop-product-images-local
+    presigned-url-expiration: 3600
+    max-file-size: 5242880
+
+---
+# Development Profile (RDS + Real S3)
+spring:
+  config:
+    activate:
+      on-profile: dev
+
+  datasource:
+    url: jdbc:postgresql://${RDS_ENDPOINT:localhost}:5432/${RDS_DB_NAME:cloudshop}
+    username: ${RDS_USERNAME:cloudshop}
+    password: ${RDS_PASSWORD:changeme}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      connection-timeout: 30000
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+
+aws:
+  region: ${AWS_REGION:eu-central-1}
+  s3:
+    bucket:
+      products: ${S3_BUCKET_PRODUCTS:cloudshop-product-images-dev}
+    presigned-url-expiration: 3600
+    max-file-size: 5242880
+
+logging:
+  level:
+    com.cloudshop: DEBUG
+    org.hibernate.SQL: INFO
+
+---
+# Production Profile
+spring:
+  config:
+    activate:
+      on-profile: prod
+
+  datasource:
+    url: jdbc:postgresql://${RDS_ENDPOINT}:5432/${RDS_DB_NAME}
+    username: ${RDS_USERNAME}
+    password: ${RDS_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 10
+      connection-timeout: 30000
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    properties:
+      hibernate:
+        format_sql: false
+
+aws:
+  region: ${AWS_REGION}
+  s3:
+    bucket:
+      products: ${S3_BUCKET_PRODUCTS}
+    presigned-url-expiration: 3600
+    max-file-size: 10485760
+
+logging:
+  level:
+    root: WARN
+    com.cloudshop: INFO
+    org.hibernate.SQL: WARN
