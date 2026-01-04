@@ -1,0 +1,16 @@
+spring:
+  application:
+    name: admin-dashboard
+
+  thymeleaf:
+    cache: false
+    prefix: classpath:/templates/
+    suffix: .html
+
+server:
+  port: 8082
+
+# Product service URL
+cloudshop:
+  product-service:
+    url: ${PRODUCT_SERVICE_URL:http://localhost:8080}

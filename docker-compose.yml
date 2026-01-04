@@ -1,0 +1,83 @@
+version: '3.8'
+
+# CloudShop Local Development Environment
+# Provides LocalStack (AWS services) and PostgreSQL for local development
+
+services:
+  # LocalStack - AWS Services Emulator
+  localstack:
+    image: localstack/localstack:3.0
+    container_name: cloudshop-localstack
+    ports:
+      - "4566:4566"           # LocalStack Gateway
+      - "4510-4559:4510-4559" # External services port range
+    environment:
+      - SERVICES=s3,sqs,sns,dynamodb,lambda,secretsmanager
+      - DEBUG=1
+      - DATA_DIR=/var/lib/localstack/data
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - AWS_DEFAULT_REGION=eu-central-1
+    volumes:
+      - "./infrastructure/localstack:/etc/localstack/init/ready.d"
+      - "localstack-data:/var/lib/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL - For local development (simulates RDS)
+  postgres:
+    image: postgres:15-alpine
+    container_name: cloudshop-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: cloudshop
+      POSTGRES_USER: cloudshop
+      POSTGRES_PASSWORD: cloudshop123
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cloudshop"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis - For caching (simulates ElastiCache)
+  redis:
+    image: redis:7-alpine
+    container_name: cloudshop-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PgAdmin - Database management UI (optional)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: cloudshop-pgadmin
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@cloudshop.local
+      PGADMIN_DEFAULT_PASSWORD: admin123
+    depends_on:
+      - postgres
+    profiles:
+      - tools
+
+volumes:
+  localstack-data:
+  postgres-data:
+  redis-data:
+
+networks:
+  default:
+    name: cloudshop-network
